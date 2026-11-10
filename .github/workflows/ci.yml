@@ -7,12 +7,15 @@ on:
 
 jobs:
   lint-skills:
-    runs-on: ubuntu-latest
+    # governance#396: self-hosted fleet; same-repository code only on pull requests.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, linux]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "lts/*"
+          package-manager-cache: false
       - run: npm ci
       - run: node --test
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
@@ -26,26 +29,30 @@ jobs:
           done
 
   sandbox-runtime:
-    name: sandbox-runtime-${{ matrix.os }}
-    runs-on: ${{ matrix.os }}
+    name: sandbox-runtime-linux
+    # governance#396: Linux containment runs on the fleet. macOS containment is not
+    # scheduled until a Mac runner we operate exists. Fork pull requests do not run here.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: [self-hosted, linux]
     timeout-minutes: 10
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, macos-latest]
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: "20.11.1"
-      - name: Install Linux sandbox dependencies
-        if: runner.os == 'Linux'
+          package-manager-cache: false
+      - name: Require sandbox tools already installed on the runner
         run: |
-          sudo apt-get update
-          sudo apt-get install -y bubblewrap socat ripgrep curl
-          if sysctl -n kernel.apparmor_restrict_unprivileged_userns >/dev/null 2>&1; then
-            sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
-          fi
+          set -euo pipefail
+          missing=0
+          for tool in bwrap socat rg curl; do
+            if ! command -v "$tool" >/dev/null 2>&1; then
+              echo "::error::$tool is not installed on this runner"
+              missing=1
+            fi
+          done
+          test "$missing" -eq 0
+          bwrap --ro-bind /usr /usr --ro-bind /bin /bin --ro-bind /lib /lib --tmpfs /tmp -- true
       - run: npm ci
       - name: Run sandbox contract and real containment tests
         run: npm run test:sandbox
